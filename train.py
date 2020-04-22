@@ -82,7 +82,7 @@ python3 train.py --G 1 --path /data/data/CRNN_OCR_keras/data/stickies_text --tra
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='crnn_ctc_loss')
-    parser.add_argument('-p', '--path', type=str, required=True)
+    # parser.add_argument('-p', '--path', type=str, required=True)
     # parser.add_argument('--training_fname', type=str, required=False, default=None)
     # parser.add_argument('--val_fname', type=str, required=False, default="")
     parser.add_argument('--save_path', type=str, required=True)
@@ -101,9 +101,9 @@ if __name__ == '__main__':
     # parser.add_argument('--norm', action='store_true')
     # parser.add_argument('--mjsynth', action='store_true')
     parser.add_argument('--GRU', action='store_true')
-    parser.add_argument('--dataset', type=str, require=True,
+    parser.add_argument('--dataset', type=str, required=True,
                         help='Location of h5 dataset')
-    parser.add_argument('--alphabet', type=str, require=True,
+    parser.add_argument('--alphabet', type=str, required=True,
                         help='Location of alphabet json file')
 
     # default values set according to mjsynth dataset rules
@@ -118,7 +118,7 @@ if __name__ == '__main__':
     import tensorflow as tf
     from keras import backend as K
     from keras.callbacks import ModelCheckpoint, LearningRateScheduler
-    from keras.utils.training_utils import multi_gpu_model
+    from keras.utils import multi_gpu_model
     from keras.models import load_model, clone_model
     from keras.layers import Lambda
     from utils import *
