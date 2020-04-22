@@ -8,10 +8,11 @@ import time
 import math
 import argparse
 from shutil import copyfile, rmtree
-    
+
 import tqdm
 import numpy as np
 from numpy.random import RandomState
+from utils import DatasetSeq
 
 
 """
@@ -82,8 +83,8 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='crnn_ctc_loss')
     parser.add_argument('-p', '--path', type=str, required=True)
-    parser.add_argument('--training_fname', type=str, required=False, default=None)
-    parser.add_argument('--val_fname', type=str, required=False, default="")
+    # parser.add_argument('--training_fname', type=str, required=False, default=None)
+    # parser.add_argument('--val_fname', type=str, required=False, default="")
     parser.add_argument('--save_path', type=str, required=True)
     parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--pretrained_path', default=None, type=str, required=False)
@@ -97,13 +98,17 @@ if __name__ == '__main__':
     parser.add_argument('--opt', type=str, default="sgd")
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--early_stopping', type=int, default=0)
-    parser.add_argument('--norm', action='store_true')
-    parser.add_argument('--mjsynth', action='store_true')
+    # parser.add_argument('--norm', action='store_true')
+    # parser.add_argument('--mjsynth', action='store_true')
     parser.add_argument('--GRU', action='store_true')
+    parser.add_argument('--dataset', type=str, require=True,
+                        help='Location of h5 dataset')
+    parser.add_argument('--alphabet', type=str, require=True,
+                        help='Location of alphabet json file')
 
     # default values set according to mjsynth dataset rules
-    parser.add_argument('--imgh', type=int, default=100)
-    parser.add_argument('--imgW', type=int, default=32)
+    # parser.add_argument('--imgh', type=int, default=100)
+    # parser.add_argument('--imgW', type=int, default=36)
 
     args = parser.parse_args()
     globals().update(vars(args))
@@ -128,39 +133,38 @@ if __name__ == '__main__':
 
     prng = RandomState(random_state)
 
-    lexicon = get_lexicon()
-
-    classes = {j:i for i, j in enumerate(lexicon)}
+    lexicon = get_lexicon(args.alphabet)
+    classes = {j: i for i, j in enumerate(lexicon)}
     inverse_classes = {v:k for k, v in classes.items()}
     print(" [INFO] %s" % classes)
 
-    if mjsynth:
-        train = open(os.path.join(path, training_fname), "r").readlines()
-        train = parse_mjsynth(path, train)
-        prng.shuffle(train)
+    # if mjsynth:
+    #     train = open(os.path.join(path, training_fname), "r").readlines()
+    #     train = parse_mjsynth(path, train)
+    #     prng.shuffle(train)
+    #
+    #     val = np.array(open(os.path.join(path, val_fname), "r").readlines())
+    #     val = parse_mjsynth(path, val)
+    #
+    # else:
+    #     train = [os.path.join(dp, f) for dp, dn, filenames in os.walk(path)
+    #              for f in filenames if re.search('png|jpeg|jpg', f)]
+    #     prng.shuffle(train)
+    #
+    #     length = len(train)
+    #     train, val = train[:int(length*train_portion)], train[int(length*train_portion):]
+    #
+    # lengths = get_lengths(train)
+    # max_len = max(lengths.values())
+    #
+    # print(f' [INFO] {len(train)} train and {len(val)} validation images loaded ')
 
-        val = np.array(open(os.path.join(path, val_fname), "r").readlines())
-        val = parse_mjsynth(path, val)
-
-    else:
-        train = [os.path.join(dp, f) for dp, dn, filenames in os.walk(path)
-                 for f in filenames if re.search('png|jpeg|jpg', f)]
-        prng.shuffle(train)
-
-        length = len(train)
-        train, val = train[:int(length*train_portion)], train[int(length*train_portion):]
-
-    lengths = get_lengths(train)
-    max_len = max(lengths.values())
-
-    print(f' [INFO] {len(train)} train and {len(val)} validation images loaded ')
-
-    reader = Readf(
-        img_size=(imgh, imgW, 1), normed=norm, batch_size=batch_size, 
-        classes=classes, max_len=max_len, transform_p=0.7
-    )
-
-    print(" [INFO] Number of classes: {}; Max. string length: {} ".format(len(classes)+1, max_len))
+    # reader = Readf(
+    #     img_size=(imgh, imgW, 1), normed=norm, batch_size=batch_size,
+    #     classes=classes, max_len=max_len, transform_p=0.7
+    # )
+    #
+    # print(" [INFO] Number of classes: {}; Max. string length: {} ".format(len(classes)+1, max_len))
 
     init_model = CRNN(num_classes=len(classes)+1, shape=(imgh, imgW, 1), GRU=GRU,
         time_dense_size=time_dense_size, n_units=n_units, max_string_len=max_len)
@@ -170,12 +174,12 @@ if __name__ == '__main__':
     if pretrained_path is not None:
         model.load_weights(pretrained_path)
 
-    train_steps = len(train) // batch_size
-    if (len(train) % batch_size) > 0:
-        train_steps += 1
-    test_steps = len(val) // batch_size
-    if (len(val) % batch_size) > 0:
-        test_steps += 1
+    # train_steps = len(train) // batch_size
+    # if (len(train) % batch_size) > 0:
+    #     train_steps += 1
+    # test_steps = len(val) // batch_size
+    # if (len(val) % batch_size) > 0:
+    #     test_steps += 1
 
     start_time = time.time()
 
@@ -191,19 +195,23 @@ if __name__ == '__main__':
 
     model.compile(loss={"ctc": lambda y_true, y_pred: y_pred}, optimizer=optimizer)
     callbacks_list = []
-    callbacks_list.append(ModelCheckpoint(filepath=save_path+'/%s/checkpoint_weights.h5'%model_name, verbose=1, 
+    callbacks_list.append(ModelCheckpoint(filepath=save_path+'/%s/checkpoint_weights.h5'%model_name, verbose=1,
                                           save_best_only=True, save_weights_only=True))
 
     if early_stopping:
         callbacks_list.append(EarlyStoppingIter(monitor='loss', min_delta=.0001, patience=early_stopping,
                                                 verbose=1, restore_best_weights=True, mode="auto"))
 
+    train_gnrt = DatasetSeq(args.dataset, classes, mode='train',
+                            batch_size=args.batch_size, debug=True)
+    val_gnrt = DatasetSeq(args.dataset, classes, mode='val',
+                          batch_size=args.batch_size, debug=True)
     H = model.fit_generator(
-        generator=reader.run_generator(train, downsample_factor=2**init_model.pooling_counter_h),
-        steps_per_epoch=train_steps,
-        epochs=nbepochs,
-        validation_data=reader.run_generator(val, downsample_factor=2**init_model.pooling_counter_h),
-        validation_steps=test_steps,
+        generator=train_gnrt,
+        steps_per_epoch=len(train_gnrt),
+        epochs=args.nbepochs,
+        validation_data=val_gnrt,
+        validation_steps=len(val_gnrt),
         shuffle=False, verbose=1,
         callbacks=callbacks_list
     )

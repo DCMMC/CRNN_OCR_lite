@@ -2,7 +2,7 @@ import os
 import re
 import gc
 import pickle
-import operator 
+import operator
 import math
 import string
 from collections import OrderedDict
@@ -12,6 +12,11 @@ import numpy as np
 from numpy.random import RandomState
 from PIL import Image, ImageDraw
 from tqdm import tqdm
+import json
+import random
+from keras.utils import Sequence
+import h5py
+from PIL import Image, ImageOps
 
 from keras.layers import Conv2D, MaxPooling2D, Activation, Dropout, add, \
                          Dense, Input, Lambda, Bidirectional, ZeroPadding2D, concatenate, Flatten, \
@@ -57,10 +62,10 @@ class CRNN:
 
     def get_model(self):
         self.pooling_counter_h, self.pooling_counter_w = 0, 0
-        inputs = Input(name='the_input', shape=self.shape, dtype='float32') #100x32x1
+        inputs = Input(name='the_input', shape=self.shape, dtype='float32') #100x36x1
         # spatial transformer
-        x = STN(inputs, sampling_size=self.shape[:2]) #100x32x1
-        x = ZeroPadding2D(padding=(2, 2))(x) #104x36x1
+        x = STN(inputs, sampling_size=self.shape[:2]) #100x36x1
+        # x = ZeroPadding2D(padding=(2, 2))(x) #104x36x1
         x = self.depthwise_conv_block(x, 64, conv_size=(3, 3), pooling=None)
         x = self.depthwise_conv_block(x, 128, conv_size=(3, 3), pooling=None)
         x = self.depthwise_conv_block(x, 256, conv_size=(3, 3), pooling=(2, 2)) #52x18x256
@@ -74,7 +79,7 @@ class CRNN:
         x = Dense(self.time_dense_size, activation='relu', name='dense1')(x) #52x128 (time_dense_size)
         x = Dropout(0.4)(x)
 
-        if not self.GRU:    
+        if not self.GRU:
             x = Bidirectional(LSTM(self.n_units, return_sequences=True, kernel_initializer='he_normal'), merge_mode='sum', weights=None)(x)
             x = Bidirectional(LSTM(self.n_units, return_sequences=True, kernel_initializer='he_normal'), merge_mode='concat', weights=None)(x)
         else:
@@ -259,7 +264,7 @@ def STN(image, sampling_size=(100, 32)):
 
 ########################################################################
 
-def levenshtein(seq1, seq2):  
+def levenshtein(seq1, seq2):
     size_x = len(seq1) + 1
     size_y = len(seq2) + 1
 
@@ -299,7 +304,7 @@ def normalized_edit_distance(y_pred, y_true):
 
 def load_model_custom(path, weights="model"):
     json_file = open(path+'/model.json', 'r')
-    loaded_model_json = json_file.read()    
+    loaded_model_json = json_file.read()
     json_file.close()
     loaded_model = model_from_json(loaded_model_json)
     loaded_model.load_weights(path+"/%s.h5" % weights)
@@ -322,7 +327,7 @@ def labels_to_text(labels, inverse_classes=None):
 
 def load_custom_model(model_path, model_name='/model.json', weights="/final_weights.h5"):
     json_file = open(model_path+model_name, 'r')
-    loaded_model_json = json_file.read()    
+    loaded_model_json = json_file.read()
     json_file.close()
     model = model_from_json(loaded_model_json, custom_objects={'BilinearInterpolation': BilinearInterpolation})
     model.load_weights(model_path+weights)
@@ -362,7 +367,6 @@ def read_img(name):
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 def open_img(img, img_size, p=.7):
-
     if isinstance(img, str):
         name = img
         img = read_img(name)
@@ -374,7 +378,7 @@ def open_img(img, img_size, p=.7):
 
     if all([img.shape[0] <= img_size[0] // 2, img.shape[1] <= img_size[1] // 2]):
         img = cv2.resize(img, (int(img.shape[1] * 1.5), int(img.shape[0] * 1.5)), Image.LANCZOS)
-        
+
     # randomly with probability of "p", move word inside the bbox
     if (img_size[1] - img.shape[1]) > 2 :
         delta = img_size[1]-img.shape[1]
@@ -386,11 +390,11 @@ def open_img(img, img_size, p=.7):
             img = np.concatenate([start, img, end], axis=1)
         else:
             img = np.concatenate([img, np.full((img.shape[0], delta), fill)], axis=1)
-        
+
     if (img_size[0] - img.shape[0]) > 2 :
         delta = img_size[0]-img.shape[0]
         r = round(np.random.uniform(0,1), 1)
-        if r <= p and p > 0.: 
+        if r <= p and p > 0.:
             c = np.random.choice(list(range(2, delta)))
             start = np.full((c - 1, img.shape[1]), fill)
             end = np.full((delta - c, img.shape[1]), fill)
@@ -403,7 +407,7 @@ def open_img(img, img_size, p=.7):
     val, counts = np.unique(img_thrsh, return_counts=True)
     if val[counts == counts.max()][0] == 255:
         img = cv2.bitwise_not(img)
-        
+
     img = cv2.resize(img, (img_size[1], img_size[0]), Image.LANCZOS)
     if 'name' in locals():
         return img, name.split("/")[-1].split("_")[1].lower()
@@ -412,14 +416,61 @@ def open_img(img, img_size, p=.7):
 def parse_mjsynth(path, names):
     return [os.path.join(path, name.split()[0][2:]) for name in names]
 
+
 def norm(image, mean, std):
     return (image.astype('float32') - mean) / std
 
+
+class DatasetSeq(Sequence):
+    def __init__(self, h5_file, classes, *, imgH=36, batch_size=32, mode='train',
+                 train_ratio=0.8, debug=False):
+        '''
+        @classes: Dict, char to index
+        '''
+        self.dataset = h5py.File(h5_file, 'r')
+        len_train = int(len(self.dataset) * train_ratio)
+        self.length = len_train if mode == 'train' else \
+            len(self.dataset) - len_train
+        self.offset = 0 if mode == 'train' else len_train
+        self.batch_size = batch_size
+        self.size = int(np.ceil(self.length / batch_size))
+        self.classes = classes
+        self.imgH = imgH
+        if debug:
+            self.length = 32000 if mode == 'train' else 8000
+            self.offset = 0 if mode == 'train' else 32000
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, index):
+        assert index <= len(self), 'index range error'
+        batch_x = []
+        batch_y = []
+        max_width = 0
+        for idx in range(index * self.batch_size, (index + 1) * self.batch_size):
+            img = Image.fromarray(self.dataset[str(index + self.offset)]['img'][...])
+            batch_x.append(img)
+            if img.size[1] > max_width:
+                max_width = img.size[0]
+            label = str(self.dataset[str(index + self.offset)]['y'][...])
+            label = ''.join(label.strip().split())
+            batch_y.append([self.classes[c] for c in label])
+        for idx in range(len(batch_x)):
+            ratio = self.imgH / batch_x[idx].size[1]
+            new_size = [int(s * ratio) for s in batch_x[idx].size]
+            img = img.resize(new_size, Image.ANTIALIAS)
+            target_w = int(ratio * max_width)
+            delta_w = target_w - img.size[0]
+            img = ImageOps.expand(img, (delta_w // 2, 0, delta_w - delta_w // 2, 0),
+                                  fill=255)
+            batch_x[idx] = (np.array(img, dtype=np.float32) / 255. - 0.5) / 0.5
+        return [np.array(batch_x), np.array(batch_y)]
+
+
 class Readf:
-
-    def __init__(self, img_size=(40,40), max_len=30, normed=False, batch_size=32, classes={}, 
+    def __init__(self, img_size=(40,40), max_len=30, normed=False, batch_size=32, classes={},
                  mean=118.24236953981779, std=36.72835353999682, transform_p=0.7):
-
         self.batch_size = batch_size
         self.transform_p = transform_p
         self.img_size = img_size
@@ -433,7 +484,8 @@ class Readf:
             self.blank = len(self.classes)
 
     def make_target(self, text):
-        return np.array([self.classes[char] if char in self.voc else self.classes['-'] for char in text])
+        # DCMMC: assume all chars are in the alphabet
+        return np.array([self.classes[char] for char in text])
 
     def get_labels(self, names):
         Y_data = np.full([len(names), self.max_len], self.blank)
@@ -466,7 +518,7 @@ class Readf:
 
         source_str = []
         X_data, Y_data, input_length, label_length = self.get_blank_matrices()
-            
+
         while True:
             for name in names:
                 if bboxs[name][0] == name:
@@ -476,7 +528,7 @@ class Readf:
 
                 for bbox in bboxs[name]:
                     if bbox != name:
-                        _img, __ = open_img(img[bbox[1]:bbox[3], bbox[2]:bbox[4]], 
+                        _img, __ = open_img(img[bbox[1]:bbox[3], bbox[2]:bbox[4]],
                                         self.img_size, p=self.transform_p)
                         word = bbox[0] if bbox[0] is not None else "-"
 
@@ -490,7 +542,7 @@ class Readf:
                         _img = norm(_img, self.mean, self.std)
 
                     X_data[i] = _img[:,:,np.newaxis]
-                    
+
                     i += 1
                     inputs = {
                         'the_input': X_data,
@@ -509,7 +561,8 @@ class Readf:
                         source_str = []
                         X_data, Y_data, input_length, label_length = self.get_blank_matrices()
                         yield (inputs, outputs)
-                    
+
+
 def make_ohe(y, nclasses):
     ohe = np.zeros((len(y), nclasses))
     ohe[np.arange(len(y)), y.astype('int64')] = 1
@@ -521,16 +574,25 @@ def get_lengths(names):
         d[name] = len(name.split("/")[-1].split("_")[1])
     return d
 
-def get_lexicon(non_intersecting_chars=False):
-    if non_intersecting_chars:
-        return list(set([i for i in '0123456789'+string.ascii_lowercase+'AaBbDdEeFfGgHhLlMmNnQqRrTt'+'-']))
-    else:
-        return [i for i in '0123456789'+string.ascii_lowercase+'-']
+# def get_lexicon(non_intersecting_chars=False):
+#     if non_intersecting_chars:
+#         return list(set([i for i in '0123456789'+string.ascii_lowercase+'AaBbDdEeFfGgHhLlMmNnQqRrTt'+'-']))
+#     else:
+#         return [i for i in '0123456789'+string.ascii_lowercase+'-']
+
+
+def get_lexicon(alphabet_json, shuffle=False):
+    alphabet = json.load(open(alphabet_json))
+    if shuffle:
+        random.shuffle(alphabet)
+    return alphabet
+
 
 def save_model_json(model, save_path, model_name):
     model_json = model.to_json()
     with open(save_path+'/'+model_name+"/model.json", "w") as json_file:
         json_file.write(model_json)
+
 
 class EarlyStoppingIter(Callback):
 
@@ -598,7 +660,7 @@ class EarlyStoppingIter(Callback):
 
             if self.monitor_op(current - self.min_delta, self.best):
                 self.best = current
-                if self.restore_best_weights:   
+                if self.restore_best_weights:
                     self.best_weights = self.model.get_weights()
             else:
                 self.stopped_iter = self.cycle_iterations
